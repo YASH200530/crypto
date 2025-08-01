@@ -1,6 +1,5 @@
 import { useState, useEffect } from "react";
-import { auth, db } from "../firebase";
-import { doc, getDoc, setDoc } from "firebase/firestore";
+import { getUserProfile, updateUserProfile } from "../services/api";
 
 export default function UserProfile() {
   const [form, setForm] = useState({
@@ -16,13 +15,11 @@ export default function UserProfile() {
 
   useEffect(() => {
     const fetchProfile = async () => {
-      const user = auth.currentUser;
-      if (!user) return;
-
-      const docRef = doc(db, "users", user.uid);
-      const docSnap = await getDoc(docRef);
-      if (docSnap.exists()) {
-        setForm(docSnap.data());
+      try {
+        const profileData = await getUserProfile();
+        setForm(profileData);
+      } catch (error) {
+        console.error('Error fetching profile:', error);
       }
     };
 
@@ -66,10 +63,7 @@ export default function UserProfile() {
 
     setLoading(true);
     try {
-      const user = auth.currentUser;
-      if (!user) return;
-
-      await setDoc(doc(db, "users", user.uid), form);
+      await updateUserProfile(form);
       alert("Details saved successfully!");
     } catch (error) {
       alert("Error saving details: " + error.message);

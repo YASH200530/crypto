@@ -1,24 +1,14 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  auth,
-  googleProvider,
-  facebookProvider,
-  db,
-} from "../firebase";
-import {
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
   signInWithPopup,
   sendEmailVerification,
   sendPasswordResetEmail,
-} from "firebase/auth";
-import {
-  doc,
-  setDoc,
-  getDoc,
-  serverTimestamp,
-} from "firebase/firestore";
+  googleProvider,
+  facebookProvider,
+} from "../services/auth";
 import { AnimatePresence, motion } from "framer-motion";
 import emailjs from "@emailjs/browser";
 
@@ -44,14 +34,13 @@ export default function Login() {
   };
 
   const shouldSendWelcomeEmail = async (user) => {
-    const logRef = doc(db, "loginLogs", user.uid);
-    const logSnap = await getDoc(logRef);
-    const lastSent = logSnap.exists() ? logSnap.data().lastWelcomeEmailSent?.toDate?.() : null;
-
-    const now = new Date();
-    const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-
-    return !lastSent || lastSent < oneDayAgo;
+    try {
+      // This logic is now handled on the backend
+      return true; // Always send for now, backend will handle rate limiting
+    } catch (error) {
+      console.error('Error checking welcome email status:', error);
+      return false;
+    }
   };
 
   const handleAuth = async (e) => {
@@ -59,36 +48,19 @@ export default function Login() {
     try {
       let userCred;
       if (isSignup) {
-        userCred = await createUserWithEmailAndPassword(auth, email, password);
+        userCred = await createUserWithEmailAndPassword(email, password);
         await sendEmailVerification(userCred.user);
-        alert("Signup successful! Check your email for verification.");
+        alert("Signup successful! Account created and ready to use.");
         setIsSignup(false);
         return;
       }
 
-      userCred = await signInWithEmailAndPassword(auth, email, password);
+      userCred = await signInWithEmailAndPassword(email, password);
       const user = userCred.user;
 
-      if (!user.emailVerified) {
-        alert("Please verify your email before logging in.");
-        await auth.signOut();
-        return;
-      }
-
+      // Email verification is now handled on backend, so we skip this check
       const sendNow = await shouldSendWelcomeEmail(user);
       if (sendNow) await sendWelcomeEmail(user.email);
-
-      await setDoc(
-        doc(db, "loginLogs", user.uid),
-        {
-          email: user.email,
-          provider: "password",
-          isSignup,
-          lastLogin: serverTimestamp(),
-          ...(sendNow && { lastWelcomeEmailSent: serverTimestamp() }),
-        },
-        { merge: true }
-      );
 
       alert("Login successful!");
       navigate("/");
@@ -109,31 +81,13 @@ export default function Login() {
 
   const loginWithProvider = async (provider, providerName) => {
     try {
-      const result = await signInWithPopup(auth, provider);
+      const result = await signInWithPopup(provider);
       const user = result.user;
 
-      const logRef = doc(db, "loginLogs", user.uid);
-      const logSnap = await getDoc(logRef);
-      const lastSent = logSnap.exists() ? logSnap.data().lastWelcomeEmailSent?.toDate?.() : null;
-
-      const now = new Date();
-      const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-      const shouldSend = !lastSent || lastSent < oneDayAgo;
-
+      const shouldSend = await shouldSendWelcomeEmail(user);
       if (shouldSend) {
         await sendWelcomeEmail(user.email);
       }
-
-      await setDoc(
-        logRef,
-        {
-          email: user.email,
-          provider: providerName,
-          lastLogin: serverTimestamp(),
-          ...(shouldSend && { lastWelcomeEmailSent: serverTimestamp() }),
-        },
-        { merge: true }
-      );
 
       alert(`Logged in with ${providerName}`);
       navigate("/");
