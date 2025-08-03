@@ -4,6 +4,7 @@ import cors from 'cors';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import dotenv from 'dotenv';
+import { sendEmail, sendCustomEmail, sendBulkEmail, testEmailConnection } from './emailService.js';
 
 dotenv.config();
 
@@ -112,6 +113,13 @@ app.post('/api/auth/register', async (req, res) => {
     });
 
     await user.save();
+
+    // Send welcome email
+    try {
+      await sendEmail(user.email, 'welcome', { displayName: user.displayName });
+    } catch (error) {
+      console.error('Failed to send welcome email:', error);
+    }
 
     // Generate JWT
     const token = jwt.sign(
@@ -277,6 +285,16 @@ app.post('/api/wallet/add-money', authenticateToken, async (req, res) => {
     });
     await transaction.save();
 
+    // Send transaction notification email
+    try {
+      await sendEmail(user.email, 'transactionAlert', {
+        displayName: user.displayName,
+        ...transaction.toObject()
+      });
+    } catch (error) {
+      console.error('Failed to send transaction email:', error);
+    }
+
     res.json({
       message: 'Money added successfully',
       balance: user.balance
@@ -349,6 +367,16 @@ app.post('/api/transactions/trade', authenticateToken, async (req, res) => {
     });
     await transaction.save();
 
+    // Send transaction notification email
+    try {
+      await sendEmail(user.email, 'transactionAlert', {
+        displayName: user.displayName,
+        ...transaction.toObject()
+      });
+    } catch (error) {
+      console.error('Failed to send transaction email:', error);
+    }
+
     res.json({
       message: `${type === 'buy' ? 'Purchase' : 'Sale'} successful`,
       balance: user.balance,
@@ -364,6 +392,118 @@ app.get('/api/login-logs', authenticateToken, async (req, res) => {
   try {
     const log = await LoginLog.findOne({ userId: req.user.userId });
     res.json(log || {});
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Email Routes
+app.post('/api/email/test', authenticateToken, async (req, res) => {
+  try {
+    const result = await testEmailConnection();
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/email/send', authenticateToken, async (req, res) => {
+  try {
+    const { to, template, templateData } = req.body;
+    
+    if (!to || !template) {
+      return res.status(400).json({ error: 'Email address and template are required' });
+    }
+
+    const result = await sendEmail(to, template, templateData);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/email/send-custom', authenticateToken, async (req, res) => {
+  try {
+    const { to, subject, htmlContent, textContent } = req.body;
+    
+    if (!to || !subject || !htmlContent) {
+      return res.status(400).json({ error: 'Email address, subject, and HTML content are required' });
+    }
+
+    const result = await sendCustomEmail(to, subject, htmlContent, textContent);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/email/send-bulk', authenticateToken, async (req, res) => {
+  try {
+    const { recipients, template, templateData } = req.body;
+    
+    if (!recipients || !Array.isArray(recipients) || !template) {
+      return res.status(400).json({ error: 'Recipients array and template are required' });
+    }
+
+    const results = await sendBulkEmail(recipients, template, templateData);
+    res.json(results);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/email/balance-alert', authenticateToken, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.userId);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const { threshold = 100 } = req.body;
+    
+    if (user.balance <= threshold) {
+      const result = await sendEmail(user.email, 'balanceAlert', {
+        displayName: user.displayName,
+        currentBalance: user.balance,
+        threshold
+      });
+      res.json({ message: 'Balance alert sent', ...result });
+    } else {
+      res.json({ message: 'Balance is above threshold, no alert sent' });
+    }
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Password Reset Route (with email)
+app.post('/api/auth/forgot-password', async (req, res) => {
+  try {
+    const { email } = req.body;
+    
+    const user = await User.findOne({ email });
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Generate reset token
+    const resetToken = jwt.sign(
+      { userId: user._id, email: user.email },
+      process.env.JWT_SECRET || 'your-secret-key',
+      { expiresIn: '1h' }
+    );
+
+    // Send password reset email
+    const result = await sendEmail(user.email, 'passwordReset', {
+      displayName: user.displayName,
+      resetToken
+    });
+
+    if (result.success) {
+      res.json({ message: 'Password reset email sent successfully' });
+    } else {
+      res.status(500).json({ error: 'Failed to send password reset email' });
+    }
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
