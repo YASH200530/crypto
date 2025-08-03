@@ -14,18 +14,18 @@ const createTransporter = () => {
   });
 };
 
-// Alternative configuration for SMTP
-const createSMTPTransporter = () => {
-  return nodemailer.createTransporter({
-    host: process.env.SMTP_HOST || 'smtp.gmail.com',
-    port: process.env.SMTP_PORT || 587,
-    secure: false, // true for 465, false for other ports
-    auth: {
-      user: process.env.EMAIL_USER,
-      pass: process.env.EMAIL_PASS
-    }
-  });
-};
+// Alternative configuration for SMTP (currently unused)
+// const createSMTPTransporter = () => {
+//   return nodemailer.createTransporter({
+//     host: process.env.SMTP_HOST || 'smtp.gmail.com',
+//     port: process.env.SMTP_PORT || 587,
+//     secure: false, // true for 465, false for other ports
+//     auth: {
+//       user: process.env.EMAIL_USER,
+//       pass: process.env.EMAIL_PASS
+//     }
+//   });
+// };
 
 // Email templates
 const emailTemplates = {
@@ -132,7 +132,7 @@ const emailTemplates = {
     `
   }),
 
-  balanceAlert: (userEmail, displayName, currentBalance, threshold) => ({
+  balanceAlert: (userEmail, displayName, currentBalance) => ({
     subject: 'Low Balance Alert - Crypto App',
     html: `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">

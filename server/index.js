@@ -332,7 +332,7 @@ app.get('/api/transactions', authenticateToken, async (req, res) => {
 
 app.post('/api/transactions/trade', authenticateToken, async (req, res) => {
   try {
-    const { type, coinId, coinName, amount, price, quantity } = req.body;
+    const { type, coinId, coinName, price, quantity } = req.body;
     const user = await User.findById(req.user.userId);
     
     if (!user) {

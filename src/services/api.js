@@ -91,7 +91,7 @@ export const getLoginLogs = async () => {
 // 🔗 Database operations (replacing Firestore)
 export const dbOperations = {
   // Get document
-  getDoc: async (collection, docId) => {
+  getDoc: async (collection) => {
     try {
       if (collection === 'users') {
         return await getUserProfile();

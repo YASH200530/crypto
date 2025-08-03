@@ -9,7 +9,7 @@ import {
   googleProvider,
   facebookProvider,
 } from "../services/auth";
-import { AnimatePresence, motion } from "framer-motion";
+import { AnimatePresence } from "framer-motion";
 import emailjs from "@emailjs/browser";
 
 export default function Login() {
@@ -33,14 +33,9 @@ export default function Login() {
     }
   };
 
-  const shouldSendWelcomeEmail = async (user) => {
-    try {
-      // This logic is now handled on the backend
-      return true; // Always send for now, backend will handle rate limiting
-    } catch (error) {
-      console.error('Error checking welcome email status:', error);
-      return false;
-    }
+  const shouldSendWelcomeEmail = async () => {
+    // This logic is now handled on the backend
+    return true; // Always send for now, backend will handle rate limiting
   };
 
   const handleAuth = async (e) => {
@@ -99,7 +94,7 @@ export default function Login() {
   const handleResetPassword = async () => {
     if (!email) return alert("Please enter your email first.");
     try {
-      await sendPasswordResetEmail(auth, email);
+      await sendPasswordResetEmail(email);
       alert("Password reset link sent to " + email);
     } catch (error) {
       alert("Reset failed: " + error.message);
