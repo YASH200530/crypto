@@ -156,14 +156,23 @@ class AuthService {
     this.notifyAuthStateChange(null);
   }
 
-  // Send password reset email (placeholder - you'd implement this on backend)
+  // Send password reset email
   async sendPasswordResetEmail(email) {
     try {
-      // For now, just show a message - you can implement this on the backend
-      console.log(`Password reset would be sent to: ${email}`);
-      return Promise.resolve();
+      const response = await api.post('/auth/forgot-password', { email });
+      return response.data;
     } catch (error) {
-      throw new Error('Password reset failed');
+      throw new Error(error.response?.data?.error || 'Password reset failed');
+    }
+  }
+
+  // Reset password with token
+  async resetPassword(token, newPassword) {
+    try {
+      const response = await api.post('/auth/reset-password', { token, newPassword });
+      return response.data;
+    } catch (error) {
+      throw new Error(error.response?.data?.error || 'Password reset failed');
     }
   }
 
@@ -212,6 +221,8 @@ export const signInWithEmailAndPassword = (email, password) =>
   auth.signInWithEmailAndPassword(email, password);
 export const sendPasswordResetEmail = (email) => 
   auth.sendPasswordResetEmail(email);
+export const resetPassword = (token, newPassword) => 
+  auth.resetPassword(token, newPassword);
 export const sendEmailVerification = (user) => 
   auth.sendEmailVerification(user);
 export const signInWithPopup = (provider) => 

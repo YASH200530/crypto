@@ -4,6 +4,7 @@ import cors from 'cors';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import dotenv from 'dotenv';
+import emailService from './emailService.js';
 
 dotenv.config();
 
@@ -27,6 +28,9 @@ mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/crypto-ap
   console.error('❌ MongoDB connection error:', err);
 });
 
+// Initialize email service
+emailService.initialize();
+
 // User Schema
 const userSchema = new mongoose.Schema({
   email: { type: String, required: true, unique: true },
@@ -40,6 +44,8 @@ const userSchema = new mongoose.Schema({
   account: String,
   ifsc: String,
   balance: { type: Number, default: 0 },
+  resetPasswordToken: String,
+  resetPasswordExpires: Date,
   createdAt: { type: Date, default: Date.now },
   lastLogin: { type: Date, default: Date.now }
 });
@@ -112,6 +118,14 @@ app.post('/api/auth/register', async (req, res) => {
     });
 
     await user.save();
+
+    // Send welcome email
+    try {
+      await emailService.sendWelcomeEmail(user.email, user.displayName);
+    } catch (emailError) {
+      console.error('Failed to send welcome email:', emailError.message);
+      // Don't fail registration if email fails
+    }
 
     // Generate JWT
     const token = jwt.sign(
@@ -277,6 +291,18 @@ app.post('/api/wallet/add-money', authenticateToken, async (req, res) => {
     });
     await transaction.save();
 
+    // Send deposit confirmation email
+    try {
+      await emailService.sendDepositConfirmation(
+        user.email, 
+        user.displayName || user.email.split('@')[0], 
+        parseFloat(amount), 
+        user.balance
+      );
+    } catch (emailError) {
+      console.error('Failed to send deposit confirmation email:', emailError.message);
+    }
+
     res.json({
       message: 'Money added successfully',
       balance: user.balance
@@ -349,12 +375,104 @@ app.post('/api/transactions/trade', authenticateToken, async (req, res) => {
     });
     await transaction.save();
 
+    // Send trade confirmation email
+    try {
+      await emailService.sendTradeConfirmation(
+        user.email,
+        user.displayName || user.email.split('@')[0],
+        {
+          action: type,
+          coinName,
+          quantity,
+          price,
+          totalAmount: totalCost,
+          newBalance: user.balance
+        }
+      );
+    } catch (emailError) {
+      console.error('Failed to send trade confirmation email:', emailError.message);
+    }
+
     res.json({
       message: `${type === 'buy' ? 'Purchase' : 'Sale'} successful`,
       balance: user.balance,
       transaction
     });
   } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Password Reset Routes
+app.post('/api/auth/forgot-password', async (req, res) => {
+  try {
+    const { email } = req.body;
+    const user = await User.findOne({ email });
+    
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Generate reset token
+    const resetToken = jwt.sign(
+      { userId: user._id },
+      process.env.JWT_SECRET || 'your-secret-key',
+      { expiresIn: '1h' }
+    );
+
+    // Save reset token to user
+    user.resetPasswordToken = resetToken;
+    user.resetPasswordExpires = new Date(Date.now() + 3600000); // 1 hour
+    await user.save();
+
+    // Send password reset email
+    try {
+      await emailService.sendPasswordResetEmail(
+        user.email,
+        user.displayName || user.email.split('@')[0],
+        resetToken
+      );
+    } catch (emailError) {
+      console.error('Failed to send password reset email:', emailError.message);
+      return res.status(500).json({ error: 'Failed to send reset email' });
+    }
+
+    res.json({ message: 'Password reset email sent successfully' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/auth/reset-password', async (req, res) => {
+  try {
+    const { token, newPassword } = req.body;
+
+    // Verify token
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
+    const user = await User.findOne({
+      _id: decoded.userId,
+      resetPasswordToken: token,
+      resetPasswordExpires: { $gt: new Date() }
+    });
+
+    if (!user) {
+      return res.status(400).json({ error: 'Invalid or expired reset token' });
+    }
+
+    // Hash new password
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    
+    // Update user password and clear reset token
+    user.password = hashedPassword;
+    user.resetPasswordToken = undefined;
+    user.resetPasswordExpires = undefined;
+    await user.save();
+
+    res.json({ message: 'Password reset successfully' });
+  } catch (error) {
+    if (error.name === 'JsonWebTokenError' || error.name === 'TokenExpiredError') {
+      return res.status(400).json({ error: 'Invalid or expired reset token' });
+    }
     res.status(500).json({ error: error.message });
   }
 });
