@@ -1,7 +1,6 @@
 import { useEffect, useState, useRef } from "react";
 import { Outlet, useNavigate, useLocation, Link } from "react-router-dom";
-import { onAuthStateChanged, signOut } from "firebase/auth";
-import { auth } from "./firebase";
+import { onAuthStateChanged, signOut } from "./services/auth";
 
 export default function App() {
   const [authChecked, setAuthChecked] = useState(false);
@@ -17,7 +16,7 @@ export default function App() {
 
   /* ───────────────── auth check ───────────────── */
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+    const unsubscribe = onAuthStateChanged((currentUser) => {
       setUser(currentUser);
       setAuthChecked(true);
 
@@ -42,7 +41,7 @@ export default function App() {
     (user?.displayName || user?.email || "?")[0].toUpperCase();
 
   const handleSignOut = async () => {
-    await signOut(auth);
+    await signOut();
     navigate("/login");
   };
 

@@ -1,33 +1,18 @@
 // src/pages/TransactionHistory.jsx
 import { useEffect, useState } from "react";
-import { auth, db } from "../firebase";
-import {
-  collection,
-  getDocs,
-  query,
-  orderBy,
-} from "firebase/firestore";
+import { getTransactions } from "../services/api";
 import { format } from "date-fns";
 
 export default function TransactionHistory() {
   const [transactions, setTransactions] = useState([]);
 
   const fetchTransactions = async () => {
-    const user = auth.currentUser;
-    if (!user) return;
-
-    const q = query(
-      collection(db, "users", user.uid, "transactions"),
-      orderBy("timestamp", "desc")
-    );
-
-    const snapshot = await getDocs(q);
-    const data = snapshot.docs.map((doc) => ({
-      id: doc.id,
-      ...doc.data(),
-    }));
-
-    setTransactions(data);
+    try {
+      const data = await getTransactions();
+      setTransactions(data);
+    } catch (error) {
+      console.error('Error fetching transactions:', error);
+    }
   };
 
   useEffect(() => {

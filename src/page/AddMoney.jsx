@@ -1,30 +1,17 @@
 import { useState } from "react";
-import { auth, db } from "../firebase";
-import { doc, getDoc, updateDoc, setDoc } from "firebase/firestore";
+import { addMoneyToWallet } from "../services/api";
 
 export default function AddMoney() {
   const [amount, setAmount] = useState("");
 
   const handleAddMoney = async () => {
-    const user = auth.currentUser;
-    if (!user) {
-      alert("Please log in.");
-      return;
+    try {
+      await addMoneyToWallet(amount);
+      alert(`₹${amount} added to wallet!`);
+      setAmount("");
+    } catch (error) {
+      alert("Error adding money: " + error.message);
     }
-
-    const walletRef = doc(db, "users", user.uid);
-    const walletSnap = await getDoc(walletRef);
-
-    let currentBalance = 0;
-    if (walletSnap.exists()) {
-      currentBalance = walletSnap.data().balance || 0;
-    }
-
-    const newBalance = currentBalance + parseFloat(amount);
-    await setDoc(walletRef, { balance: newBalance }, { merge: true });
-
-    alert(`₹${amount} added to wallet!`);
-    setAmount("");
   };
 
   return (

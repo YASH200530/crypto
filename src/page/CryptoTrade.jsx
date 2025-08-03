@@ -1,12 +1,6 @@
 import { useEffect, useState } from "react";
-import { db, auth } from "../firebase";
-import {
-  doc,
-  getDoc,
-  setDoc,
-  updateDoc,
-  serverTimestamp,
-} from "firebase/firestore";
+import { getWalletBalance, executeTrade } from "../services/api";
+import { onAuthStateChanged } from "../services/auth";
 
 export default function CryptoTrade() {
   const [amount, setAmount] = useState("");
@@ -17,18 +11,15 @@ export default function CryptoTrade() {
   // Fetch user balance and holdings
   useEffect(() => {
     const fetchBalance = async () => {
-      const unsubscribe = auth.onAuthStateChanged(async (user) => {
+      const unsubscribe = onAuthStateChanged(async (user) => {
         if (!user) return;
 
-        const userRef = doc(db, "users", user.uid);
-        const userSnap = await getDoc(userRef);
-
-        if (userSnap.exists()) {
-          const data = userSnap.data();
-          setBalance(data.balance || 0);
-        } else {
-          await setDoc(userRef, { balance: 100000, holdings: {} }); // Default setup
-          setBalance(100000);
+        try {
+          const balanceData = await getWalletBalance();
+          setBalance(balanceData.balance || 0);
+        } catch (error) {
+          console.error('Error fetching balance:', error);
+          setBalance(0);
         }
       });
 
@@ -39,81 +30,29 @@ export default function CryptoTrade() {
   }, []);
 
   const handleTrade = async () => {
-    const user = auth.currentUser;
-    if (!user) {
-      alert("Please log in to trade.");
-      return;
-    }
-
     const amountFloat = parseFloat(amount);
     if (!amount || isNaN(amountFloat) || amountFloat <= 0) {
       alert("Please enter a valid amount.");
       return;
     }
 
-    const userRef = doc(db, "users", user.uid);
-    const userSnap = await getDoc(userRef);
-
-    if (!userSnap.exists()) {
-      alert("User data not found.");
-      return;
-    }
-
-    const userData = userSnap.data();
-    const currentBalance = userData.balance || 0;
-    const holdings = userData.holdings || {};
-    const coinHolding = holdings[coin]?.quantity || 0;
-
-    let updatedBalance = currentBalance;
-    let updatedHoldings = { ...holdings };
-
-    if (action === "buy") {
-      if (amountFloat > currentBalance) {
-        alert("Insufficient balance.");
-        return;
-      }
-
-      updatedBalance -= amountFloat;
-      updatedHoldings[coin] = {
-        quantity: coinHolding + amountFloat,
-      };
-    } else {
-      if (amountFloat > coinHolding) {
-        alert("Not enough crypto to sell.");
-        return;
-      }
-
-      updatedBalance += amountFloat;
-      updatedHoldings[coin] = {
-        quantity: coinHolding - amountFloat,
-      };
-    }
-
     try {
-      await updateDoc(userRef, {
-        balance: updatedBalance,
-        holdings: updatedHoldings,
-      });
+      const tradeData = {
+        type: action,
+        coinId: coin.toLowerCase(),
+        coinName: coin,
+        price: 1, // Simplified - in real app you'd get current price
+        quantity: amountFloat,
+        amount: amountFloat
+      };
 
-      // Optional: Save trade record
-      await setDoc(
-        doc(db, "trades", `${user.uid}_${Date.now()}`),
-        {
-          userId: user.uid,
-          email: user.email,
-          coin,
-          amount: amountFloat,
-          action,
-          timestamp: serverTimestamp(),
-        }
-      );
-
-      setBalance(updatedBalance);
+      const result = await executeTrade(tradeData);
+      setBalance(result.balance);
       setAmount("");
       alert(`${action === "buy" ? "Buy" : "Sell"} order successful!`);
-    } catch (err) {
-      console.error("Trade failed:", err);
-      alert("Trade failed. Please try again.");
+    } catch (error) {
+      console.error("Trade failed:", error);
+      alert("Trade failed: " + error.message);
     }
   };
 
