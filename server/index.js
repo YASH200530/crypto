@@ -266,21 +266,21 @@ app.put('/api/user/profile', authenticateToken, async (req, res) => {
 // Wallet Routes
 app.post('/api/wallet/add-money', authenticateToken, async (req, res) => {
   try {
-    const { amount } = req.body;
+    const { amount: _amount } = req.body;
     const user = await User.findById(req.user.userId);
     
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    user.balance = (user.balance || 0) + parseFloat(amount);
+    user.balance = (user.balance || 0) + parseFloat(_amount);
     await user.save();
 
     // Log transaction
     const transaction = new Transaction({
       userId: user._id,
       type: 'deposit',
-      amount: parseFloat(amount),
+      amount: parseFloat(_amount),
       timestamp: new Date()
     });
     await transaction.save();
@@ -332,7 +332,7 @@ app.get('/api/transactions', authenticateToken, async (req, res) => {
 
 app.post('/api/transactions/trade', authenticateToken, async (req, res) => {
   try {
-    const { type, coinId, coinName, amount, price, quantity } = req.body;
+    const { type, coinId, coinName, price, quantity } = req.body;
     const user = await User.findById(req.user.userId);
     
     if (!user) {

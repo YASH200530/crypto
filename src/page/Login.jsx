@@ -4,44 +4,16 @@ import {
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
   signInWithPopup,
-  sendEmailVerification,
-  sendPasswordResetEmail,
+    sendEmailVerification,
   googleProvider,
   facebookProvider,
 } from "../services/auth";
-import { AnimatePresence, motion } from "framer-motion";
-import emailjs from "@emailjs/browser";
-
+import { AnimatePresence } from "framer-motion";
 export default function Login() {
   const [isSignup, setIsSignup] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const navigate = useNavigate();
-
-  // ✅ EmailJS Welcome Mail
-  const sendWelcomeEmail = async (email) => {
-    try {
-      await emailjs.send(
-        "service_gy5dacm",
-        "template_vq91bu8",
-        { to_email: email },
-        "XRDV3jAVQ485rMlMY"
-      );
-      console.log("✅ Welcome email sent to", email);
-    } catch (error) {
-      console.error("❌ EmailJS error:", error);
-    }
-  };
-
-  const shouldSendWelcomeEmail = async (user) => {
-    try {
-      // This logic is now handled on the backend
-      return true; // Always send for now, backend will handle rate limiting
-    } catch (error) {
-      console.error('Error checking welcome email status:', error);
-      return false;
-    }
-  };
 
   const handleAuth = async (e) => {
     e.preventDefault();
@@ -56,11 +28,9 @@ export default function Login() {
       }
 
       userCred = await signInWithEmailAndPassword(email, password);
-      const user = userCred.user;
+      const _user = userCred.user;
 
-      // Email verification is now handled on backend, so we skip this check
-      const sendNow = await shouldSendWelcomeEmail(user);
-      if (sendNow) await sendWelcomeEmail(user.email);
+      // Welcome email is now handled automatically on the backend
 
       alert("Login successful!");
       navigate("/");
@@ -82,12 +52,9 @@ export default function Login() {
   const loginWithProvider = async (provider, providerName) => {
     try {
       const result = await signInWithPopup(provider);
-      const user = result.user;
+      const _user = result.user;
 
-      const shouldSend = await shouldSendWelcomeEmail(user);
-      if (shouldSend) {
-        await sendWelcomeEmail(user.email);
-      }
+      // Welcome email is now handled automatically on the backend
 
       alert(`Logged in with ${providerName}`);
       navigate("/");
@@ -99,8 +66,20 @@ export default function Login() {
   const handleResetPassword = async () => {
     if (!email) return alert("Please enter your email first.");
     try {
-      await sendPasswordResetEmail(auth, email);
-      alert("Password reset link sent to " + email);
+      // Use the backend API for password reset
+      const response = await fetch('/api/auth/forgot-password', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ email })
+      });
+      const result = await response.json();
+      if (response.ok) {
+        alert("Password reset link sent to " + email);
+      } else {
+        alert("Reset failed: " + result.error);
+      }
     } catch (error) {
       alert("Reset failed: " + error.message);
     }

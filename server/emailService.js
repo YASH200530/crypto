@@ -14,8 +14,8 @@ const createTransporter = () => {
   });
 };
 
-// Alternative configuration for SMTP
-const createSMTPTransporter = () => {
+// Alternative configuration for SMTP (exported for potential use)
+export const createSMTPTransporter = () => {
   return nodemailer.createTransporter({
     host: process.env.SMTP_HOST || 'smtp.gmail.com',
     port: process.env.SMTP_PORT || 587,
@@ -132,7 +132,7 @@ const emailTemplates = {
     `
   }),
 
-  balanceAlert: (userEmail, displayName, currentBalance, threshold) => ({
+  balanceAlert: (userEmail, displayName, currentBalance) => ({
     subject: 'Low Balance Alert - Crypto App',
     html: `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">

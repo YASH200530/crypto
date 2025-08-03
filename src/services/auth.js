@@ -74,7 +74,7 @@ class AuthService {
         this.notifyAuthStateChange(user);
         
         return user;
-      } catch (error) {
+      } catch {
         // Token is invalid, clear storage
         localStorage.removeItem('authToken');
         localStorage.removeItem('user');
@@ -162,7 +162,7 @@ class AuthService {
       // For now, just show a message - you can implement this on the backend
       console.log(`Password reset would be sent to: ${email}`);
       return Promise.resolve();
-    } catch (error) {
+    } catch {
       throw new Error('Password reset failed');
     }
   }
@@ -172,7 +172,7 @@ class AuthService {
     try {
       console.log(`Email verification would be sent to: ${user.email}`);
       return Promise.resolve();
-    } catch (error) {
+    } catch {
       throw new Error('Email verification failed');
     }
   }
@@ -184,7 +184,7 @@ class AuthService {
   }
 
   // Sign in with popup (Google/Facebook) - placeholder
-  async signInWithPopup(provider) {
+  async signInWithPopup() {
     try {
       // This would require implementing OAuth on the backend
       // For now, we'll just throw an error to maintain compatibility
