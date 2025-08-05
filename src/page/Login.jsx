@@ -9,13 +9,15 @@ import {
   googleProvider,
   facebookProvider,
 } from "../services/auth";
-import { AnimatePresence } from "framer-motion";
+import { AnimatePresence, motion } from "framer-motion";
 import emailjs from "@emailjs/browser";
 
 export default function Login() {
   const [isSignup, setIsSignup] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState("");
   const navigate = useNavigate();
 
   // ✅ EmailJS Welcome Mail
@@ -40,11 +42,15 @@ export default function Login() {
 
   const handleAuth = async (e) => {
     e.preventDefault();
+    setIsLoading(true);
+    setError("");
+    
     try {
       let userCred;
       if (isSignup) {
         userCred = await createUserWithEmailAndPassword(email, password);
         await sendEmailVerification(userCred.user);
+        setError("");
         alert("Signup successful! Account created and ready to use.");
         setIsSignup(false);
         return;
@@ -57,24 +63,29 @@ export default function Login() {
       const sendNow = await shouldSendWelcomeEmail(user);
       if (sendNow) await sendWelcomeEmail(user.email);
 
-      alert("Login successful!");
+      setError("");
       navigate("/");
     } catch (err) {
       if (err.code === "auth/user-not-found") {
-        alert("No account found. Please sign up first.");
+        setError("No account found. Please sign up first.");
         setIsSignup(true);
       } else if (err.code === "auth/wrong-password") {
-        alert("Incorrect password.");
+        setError("Incorrect password.");
       } else if (err.code === "auth/email-already-in-use" && isSignup) {
-        alert("Email already registered. Please login.");
+        setError("Email already registered. Please login.");
         setIsSignup(false);
       } else {
-        alert("Error: " + err.message);
+        setError(err.message);
       }
+    } finally {
+      setIsLoading(false);
     }
   };
 
   const loginWithProvider = async (provider, providerName) => {
+    setIsLoading(true);
+    setError("");
+    
     try {
       const result = await signInWithPopup(provider);
       const user = result.user;
@@ -84,10 +95,12 @@ export default function Login() {
         await sendWelcomeEmail(user.email);
       }
 
-      alert(`Logged in with ${providerName}`);
+      setError("");
       navigate("/");
     } catch (err) {
-      alert(`${providerName} login failed: ${err.message}`);
+      setError(`${providerName} login failed: ${err.message}`);
+    } finally {
+      setIsLoading(false);
     }
   };
 
