@@ -37,14 +37,17 @@ class AuthService {
   constructor() {
     this.currentUser = null;
     this.authCallbacks = [];
+    this.initialized = false;
   }
 
   // Register a callback for auth state changes
   onAuthStateChanged(callback) {
     this.authCallbacks.push(callback);
     
-    // Immediately call with current user
-    callback(this.currentUser);
+    // If already initialized, immediately call with current user
+    if (this.initialized) {
+      callback(this.currentUser);
+    }
     
     // Return unsubscribe function
     return () => {
@@ -55,40 +58,47 @@ class AuthService {
   // Notify all callbacks of auth state change
   notifyAuthStateChange(user) {
     this.currentUser = user;
+    this.initialized = true;
     this.authCallbacks.forEach(callback => callback(user));
   }
 
   // Initialize auth state from localStorage
   async initializeAuth() {
-    const token = localStorage.getItem('authToken');
-    const storedUser = localStorage.getItem('user');
-    
-    if (token && storedUser) {
-      try {
-        // Parse stored user first
-        const user = JSON.parse(storedUser);
-        this.notifyAuthStateChange(user);
-        
-        // Verify token with server in background
-        const response = await api.post('/auth/verify');
-        const verifiedUser = response.data.user;
-        
-        // Update stored user data if different
-        if (JSON.stringify(user) !== JSON.stringify(verifiedUser)) {
-          localStorage.setItem('user', JSON.stringify(verifiedUser));
-          this.notifyAuthStateChange(verifiedUser);
+    try {
+      const token = localStorage.getItem('authToken');
+      const storedUser = localStorage.getItem('user');
+      
+      if (token && storedUser) {
+        try {
+          // Parse stored user first
+          const user = JSON.parse(storedUser);
+          this.notifyAuthStateChange(user);
+          
+          // Verify token with server in background
+          const response = await api.post('/auth/verify');
+          const verifiedUser = response.data.user;
+          
+          // Update stored user data if different
+          if (JSON.stringify(user) !== JSON.stringify(verifiedUser)) {
+            localStorage.setItem('user', JSON.stringify(verifiedUser));
+            this.notifyAuthStateChange(verifiedUser);
+          }
+          
+          return verifiedUser;
+        } catch (error) {
+          console.log('Token verification failed:', error.message);
+          // Token is invalid, clear storage
+          localStorage.removeItem('authToken');
+          localStorage.removeItem('user');
+          this.notifyAuthStateChange(null);
+          return null;
         }
-        
-        return verifiedUser;
-      } catch (error) {
-        console.log('Token verification failed:', error.message);
-        // Token is invalid, clear storage
-        localStorage.removeItem('authToken');
-        localStorage.removeItem('user');
+      } else {
         this.notifyAuthStateChange(null);
         return null;
       }
-    } else {
+    } catch (error) {
+      console.error('Auth initialization error:', error);
       this.notifyAuthStateChange(null);
       return null;
     }
@@ -194,62 +204,18 @@ class AuthService {
     try {
       const providerName = provider.providerId === 'google.com' ? 'google' : 'facebook';
       
-      // Get auth URL from backend
+      // For now, redirect to OAuth URL directly (simpler approach)
       const response = await api.get(`/auth/${providerName}`);
       const { authUrl } = response.data;
       
-      // Open popup window
-      const popup = window.open(
-        authUrl,
-        `${providerName}-login`,
-        'width=500,height=600,scrollbars=yes,resizable=yes'
-      );
+      // Store the current page URL to redirect back after OAuth
+      localStorage.setItem('oauthRedirect', window.location.pathname);
       
-      // Wait for popup to complete OAuth flow
-      return new Promise((resolve, reject) => {
-        const checkClosed = setInterval(() => {
-          if (popup.closed) {
-            clearInterval(checkClosed);
-            reject(new Error('OAuth popup was closed'));
-          }
-        }, 1000);
-        
-        // Listen for message from popup
-        const messageHandler = async (event) => {
-          if (event.origin !== window.location.origin) return;
-          
-          if (event.data.type === 'OAUTH_SUCCESS') {
-            clearInterval(checkClosed);
-            window.removeEventListener('message', messageHandler);
-            popup.close();
-            
-            try {
-              // Send the authorization code to backend
-              const callbackResponse = await api.post(`/auth/${providerName}/callback`, {
-                code: event.data.code
-              });
-              
-              const { token, user } = callbackResponse.data;
-              
-              // Store token and user
-              localStorage.setItem('authToken', token);
-              localStorage.setItem('user', JSON.stringify(user));
-              
-              this.notifyAuthStateChange(user);
-              resolve({ user });
-            } catch (error) {
-              reject(new Error(error.response?.data?.error || `${providerName} login failed`));
-            }
-          } else if (event.data.type === 'OAUTH_ERROR') {
-            clearInterval(checkClosed);
-            window.removeEventListener('message', messageHandler);
-            popup.close();
-            reject(new Error(event.data.error || `${providerName} login failed`));
-          }
-        };
-        
-        window.addEventListener('message', messageHandler);
-      });
+      // Redirect to OAuth URL
+      window.location.href = authUrl;
+      
+      // This won't actually return since we're redirecting
+      return new Promise(() => {});
     } catch (error) {
       throw new Error(`Social login failed: ${error.message}`);
     }
