@@ -65,16 +65,23 @@ class AuthService {
     
     if (token && storedUser) {
       try {
-        // Verify token with server
-        const response = await api.post('/auth/verify');
-        const user = response.data.user;
-        
-        // Update stored user data
-        localStorage.setItem('user', JSON.stringify(user));
+        // Parse stored user first
+        const user = JSON.parse(storedUser);
         this.notifyAuthStateChange(user);
         
-        return user;
-      } catch {
+        // Verify token with server in background
+        const response = await api.post('/auth/verify');
+        const verifiedUser = response.data.user;
+        
+        // Update stored user data if different
+        if (JSON.stringify(user) !== JSON.stringify(verifiedUser)) {
+          localStorage.setItem('user', JSON.stringify(verifiedUser));
+          this.notifyAuthStateChange(verifiedUser);
+        }
+        
+        return verifiedUser;
+      } catch (error) {
+        console.log('Token verification failed:', error.message);
         // Token is invalid, clear storage
         localStorage.removeItem('authToken');
         localStorage.removeItem('user');
@@ -156,14 +163,13 @@ class AuthService {
     this.notifyAuthStateChange(null);
   }
 
-  // Send password reset email (placeholder - you'd implement this on backend)
+  // Send password reset email
   async sendPasswordResetEmail(email) {
     try {
-      // For now, just show a message - you can implement this on the backend
-      console.log(`Password reset would be sent to: ${email}`);
-      return Promise.resolve();
-    } catch {
-      throw new Error('Password reset failed');
+      const response = await api.post('/auth/forgot-password', { email });
+      return response.data;
+    } catch (error) {
+      throw new Error(error.response?.data?.error || 'Password reset failed');
     }
   }
 
@@ -183,12 +189,67 @@ class AuthService {
     return storedUser ? JSON.parse(storedUser) : null;
   }
 
-  // Sign in with popup (Google/Facebook) - placeholder
-  async signInWithPopup() {
+  // Sign in with popup (Google/Facebook)
+  async signInWithPopup(provider) {
     try {
-      // This would require implementing OAuth on the backend
-      // For now, we'll just throw an error to maintain compatibility
-      throw new Error('Social login not implemented yet');
+      const providerName = provider.providerId === 'google.com' ? 'google' : 'facebook';
+      
+      // Get auth URL from backend
+      const response = await api.get(`/auth/${providerName}`);
+      const { authUrl } = response.data;
+      
+      // Open popup window
+      const popup = window.open(
+        authUrl,
+        `${providerName}-login`,
+        'width=500,height=600,scrollbars=yes,resizable=yes'
+      );
+      
+      // Wait for popup to complete OAuth flow
+      return new Promise((resolve, reject) => {
+        const checkClosed = setInterval(() => {
+          if (popup.closed) {
+            clearInterval(checkClosed);
+            reject(new Error('OAuth popup was closed'));
+          }
+        }, 1000);
+        
+        // Listen for message from popup
+        const messageHandler = async (event) => {
+          if (event.origin !== window.location.origin) return;
+          
+          if (event.data.type === 'OAUTH_SUCCESS') {
+            clearInterval(checkClosed);
+            window.removeEventListener('message', messageHandler);
+            popup.close();
+            
+            try {
+              // Send the authorization code to backend
+              const callbackResponse = await api.post(`/auth/${providerName}/callback`, {
+                code: event.data.code
+              });
+              
+              const { token, user } = callbackResponse.data;
+              
+              // Store token and user
+              localStorage.setItem('authToken', token);
+              localStorage.setItem('user', JSON.stringify(user));
+              
+              this.notifyAuthStateChange(user);
+              resolve({ user });
+            } catch (error) {
+              reject(new Error(error.response?.data?.error || `${providerName} login failed`));
+            }
+          } else if (event.data.type === 'OAUTH_ERROR') {
+            clearInterval(checkClosed);
+            window.removeEventListener('message', messageHandler);
+            popup.close();
+            reject(new Error(event.data.error || `${providerName} login failed`));
+          }
+        };
+        
+        window.addEventListener('message', messageHandler);
+      });
     } catch (error) {
       throw new Error(`Social login failed: ${error.message}`);
     }

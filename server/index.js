@@ -3,6 +3,7 @@ import mongoose from 'mongoose';
 import cors from 'cors';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import session from 'express-session';
 import dotenv from 'dotenv';
 import { sendEmail, sendCustomEmail, sendBulkEmail, testEmailConnection, getDeviceInfo, getLocationInfo } from './emailService.js';
 
@@ -18,6 +19,17 @@ app.use(cors({
 }));
 app.use(express.json());
 
+// Session middleware for OAuth
+app.use(session({
+  secret: process.env.SESSION_SECRET || 'your-session-secret',
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    secure: process.env.NODE_ENV === 'production',
+    maxAge: 24 * 60 * 60 * 1000 // 24 hours
+  }
+}));
+
 // MongoDB Connection
 mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/crypto-app', {
   useNewUrlParser: true,
@@ -31,10 +43,15 @@ mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/crypto-ap
 // User Schema
 const userSchema = new mongoose.Schema({
   email: { type: String, required: true, unique: true },
-  password: { type: String, required: true },
+  password: { type: String }, // Not required for OAuth users
   displayName: { type: String },
+  firstName: { type: String },
+  lastName: { type: String },
+  profilePicture: { type: String },
   emailVerified: { type: Boolean, default: false },
   provider: { type: String, default: 'email' },
+  googleId: { type: String },
+  facebookId: { type: String },
   fullName: String,
   pan: String,
   UPI: String,
@@ -706,6 +723,216 @@ app.get('/api/email/unsubscribe/:userId/:type', async (req, res) => {
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+// OAuth Routes
+// Google OAuth
+app.get('/api/auth/google', (req, res) => {
+  const redirectUri = process.env.GOOGLE_REDIRECT_URI || `${process.env.CLIENT_URL || 'http://localhost:5173'}/oauth-callback.html`;
+  const googleAuthURL = `https://accounts.google.com/o/oauth2/v2/auth?` +
+    `client_id=${process.env.GOOGLE_CLIENT_ID}&` +
+    `redirect_uri=${encodeURIComponent(redirectUri)}&` +
+    `response_type=code&` +
+    `scope=openid%20email%20profile`;
+  
+  res.json({ authUrl: googleAuthURL });
+});
+
+app.post('/api/auth/google/callback', async (req, res) => {
+  try {
+    const { code } = req.body;
+    
+    // Exchange code for tokens
+    const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        client_id: process.env.GOOGLE_CLIENT_ID,
+        client_secret: process.env.GOOGLE_CLIENT_SECRET,
+        code,
+        grant_type: 'authorization_code',
+        redirect_uri: process.env.GOOGLE_REDIRECT_URI || `${process.env.CLIENT_URL || 'http://localhost:5173'}/oauth-callback.html`,
+      }),
+    });
+
+    const tokens = await tokenResponse.json();
+    
+    if (!tokens.access_token) {
+      return res.status(400).json({ error: 'Failed to get access token' });
+    }
+
+    // Get user profile
+    const profileResponse = await fetch(`https://www.googleapis.com/oauth2/v2/userinfo?access_token=${tokens.access_token}`);
+    const profile = await profileResponse.json();
+
+    // Check if user exists
+    let user = await User.findOne({ 
+      $or: [
+        { googleId: profile.id },
+        { email: profile.email }
+      ]
+    });
+
+    if (user) {
+      // Update Google ID if user exists but doesn't have it
+      if (!user.googleId) {
+        user.googleId = profile.id;
+        user.provider = 'google';
+        await user.save();
+      }
+    } else {
+      // Create new user
+      user = new User({
+        googleId: profile.id,
+        email: profile.email,
+        displayName: profile.name,
+        firstName: profile.given_name,
+        lastName: profile.family_name,
+        profilePicture: profile.picture,
+        provider: 'google',
+        emailVerified: true
+      });
+      await user.save();
+
+      // Send welcome email
+      try {
+        await sendEmail(user.email, 'welcome', { displayName: user.displayName });
+      } catch (error) {
+        console.error('Failed to send welcome email:', error);
+      }
+    }
+
+    // Update last login
+    user.lastLogin = new Date();
+    await user.save();
+
+    // Generate JWT
+    const token = jwt.sign(
+      { userId: user._id, email: user.email },
+      process.env.JWT_SECRET || 'your-secret-key',
+      { expiresIn: '7d' }
+    );
+
+    res.json({
+      message: 'Google login successful',
+      token,
+      user: {
+        uid: user._id,
+        email: user.email,
+        displayName: user.displayName,
+        emailVerified: user.emailVerified,
+        profilePicture: user.profilePicture
+      }
+    });
+  } catch (error) {
+    console.error('Google OAuth error:', error);
+    res.status(500).json({ error: 'Google authentication failed' });
+  }
+});
+
+// Facebook OAuth
+app.get('/api/auth/facebook', (req, res) => {
+  const redirectUri = process.env.FACEBOOK_REDIRECT_URI || `${process.env.CLIENT_URL || 'http://localhost:5173'}/oauth-callback.html`;
+  const facebookAuthURL = `https://www.facebook.com/v18.0/dialog/oauth?` +
+    `client_id=${process.env.FACEBOOK_APP_ID}&` +
+    `redirect_uri=${encodeURIComponent(redirectUri)}&` +
+    `scope=email&` +
+    `response_type=code`;
+  
+  res.json({ authUrl: facebookAuthURL });
+});
+
+app.post('/api/auth/facebook/callback', async (req, res) => {
+  try {
+    const { code } = req.body;
+    
+    // Exchange code for access token
+    const tokenResponse = await fetch(`https://graph.facebook.com/v18.0/oauth/access_token?` +
+      `client_id=${process.env.FACEBOOK_APP_ID}&` +
+      `client_secret=${process.env.FACEBOOK_APP_SECRET}&` +
+      `code=${code}&` +
+      `redirect_uri=${encodeURIComponent(process.env.FACEBOOK_REDIRECT_URI || `${process.env.CLIENT_URL || 'http://localhost:5173'}/oauth-callback.html`)}`
+    );
+
+    const tokens = await tokenResponse.json();
+    
+    if (!tokens.access_token) {
+      return res.status(400).json({ error: 'Failed to get access token' });
+    }
+
+    // Get user profile
+    const profileResponse = await fetch(`https://graph.facebook.com/me?fields=id,name,email,first_name,last_name,picture&access_token=${tokens.access_token}`);
+    const profile = await profileResponse.json();
+
+    if (!profile.email) {
+      return res.status(400).json({ error: 'Email permission required' });
+    }
+
+    // Check if user exists
+    let user = await User.findOne({ 
+      $or: [
+        { facebookId: profile.id },
+        { email: profile.email }
+      ]
+    });
+
+    if (user) {
+      // Update Facebook ID if user exists but doesn't have it
+      if (!user.facebookId) {
+        user.facebookId = profile.id;
+        user.provider = 'facebook';
+        await user.save();
+      }
+    } else {
+      // Create new user
+      user = new User({
+        facebookId: profile.id,
+        email: profile.email,
+        displayName: profile.name,
+        firstName: profile.first_name,
+        lastName: profile.last_name,
+        profilePicture: profile.picture?.data?.url,
+        provider: 'facebook',
+        emailVerified: true
+      });
+      await user.save();
+
+      // Send welcome email
+      try {
+        await sendEmail(user.email, 'welcome', { displayName: user.displayName });
+      } catch (error) {
+        console.error('Failed to send welcome email:', error);
+      }
+    }
+
+    // Update last login
+    user.lastLogin = new Date();
+    await user.save();
+
+    // Generate JWT
+    const token = jwt.sign(
+      { userId: user._id, email: user.email },
+      process.env.JWT_SECRET || 'your-secret-key',
+      { expiresIn: '7d' }
+    );
+
+    res.json({
+      message: 'Facebook login successful',
+      token,
+      user: {
+        uid: user._id,
+        email: user.email,
+        displayName: user.displayName,
+        emailVerified: user.emailVerified,
+        profilePicture: user.profilePicture
+      }
+    });
+  } catch (error) {
+    console.error('Facebook OAuth error:', error);
+    res.status(500).json({ error: 'Facebook authentication failed' });
   }
 });
 
