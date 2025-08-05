@@ -11,6 +11,7 @@ import UserProfile from "./page/UserProfile";
 import CryptoTrade from "./page/CryptoTrade"; // ✅ Trade page
 import AddMoney from "./page/AddMoney";       // ✅ Add money page
 import TransactionHistory from "./page/TransactionHistory";
+import OAuthCallback from "./page/OAuthCallback";
 
 import "./App.css";
 
@@ -37,6 +38,9 @@ ReactDOM.createRoot(document.getElementById("root")).render(
 
         {/* ✅ Public Login route */}
         <Route path="/login" element={<Login />} />
+        
+        {/* ✅ OAuth callback routes */}
+        <Route path="/auth/:provider/callback" element={<OAuthCallback />} />
       </Routes>
     </BrowserRouter>
   </React.StrictMode>

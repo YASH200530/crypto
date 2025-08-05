@@ -21,8 +21,12 @@ export default function App() {
       setUser(user);
       setAuthChecked(true);
       
-      // Redirect to login if not authenticated and not already on login page
-      if (!user && location.pathname !== "/login") {
+      // Don't redirect if we're on OAuth callback or login page
+      const isPublicRoute = location.pathname === "/login" || 
+                           location.pathname.startsWith("/auth/");
+      
+      // Redirect to login if not authenticated and not on a public route
+      if (!user && !isPublicRoute) {
         navigate("/login");
       }
     });
@@ -56,11 +60,22 @@ export default function App() {
 
   // Don't render anything until auth is checked
   if (!authChecked) {
-    return <div className="min-h-screen flex items-center justify-center">Loading...</div>;
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-gray-100 to-gray-300 dark:from-gray-900 dark:to-gray-800">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-blue-600 mx-auto mb-4"></div>
+          <h2 className="text-xl font-semibold text-gray-900 dark:text-white">Loading...</h2>
+          <p className="text-gray-600 dark:text-gray-400 mt-2">Initializing your crypto dashboard</p>
+        </div>
+      </div>
+    );
   }
 
-  // Show login page if not authenticated
-  if (!user && location.pathname !== "/login") {
+  // Show login page or OAuth callback if not authenticated
+  const isPublicRoute = location.pathname === "/login" || 
+                       location.pathname.startsWith("/auth/");
+  
+  if (!user && !isPublicRoute) {
     return null; // Will redirect to login via useEffect
   }
 

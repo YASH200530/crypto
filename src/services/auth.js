@@ -37,14 +37,17 @@ class AuthService {
   constructor() {
     this.currentUser = null;
     this.authCallbacks = [];
+    this.initialized = false;
   }
 
   // Register a callback for auth state changes
   onAuthStateChanged(callback) {
     this.authCallbacks.push(callback);
     
-    // Immediately call with current user
-    callback(this.currentUser);
+    // If already initialized, immediately call with current user
+    if (this.initialized) {
+      callback(this.currentUser);
+    }
     
     // Return unsubscribe function
     return () => {
@@ -55,33 +58,47 @@ class AuthService {
   // Notify all callbacks of auth state change
   notifyAuthStateChange(user) {
     this.currentUser = user;
+    this.initialized = true;
     this.authCallbacks.forEach(callback => callback(user));
   }
 
   // Initialize auth state from localStorage
   async initializeAuth() {
-    const token = localStorage.getItem('authToken');
-    const storedUser = localStorage.getItem('user');
-    
-    if (token && storedUser) {
-      try {
-        // Verify token with server
-        const response = await api.post('/auth/verify');
-        const user = response.data.user;
-        
-        // Update stored user data
-        localStorage.setItem('user', JSON.stringify(user));
-        this.notifyAuthStateChange(user);
-        
-        return user;
-      } catch {
-        // Token is invalid, clear storage
-        localStorage.removeItem('authToken');
-        localStorage.removeItem('user');
+    try {
+      const token = localStorage.getItem('authToken');
+      const storedUser = localStorage.getItem('user');
+      
+      if (token && storedUser) {
+        try {
+          // Parse stored user first
+          const user = JSON.parse(storedUser);
+          this.notifyAuthStateChange(user);
+          
+          // Verify token with server in background
+          const response = await api.post('/auth/verify');
+          const verifiedUser = response.data.user;
+          
+          // Update stored user data if different
+          if (JSON.stringify(user) !== JSON.stringify(verifiedUser)) {
+            localStorage.setItem('user', JSON.stringify(verifiedUser));
+            this.notifyAuthStateChange(verifiedUser);
+          }
+          
+          return verifiedUser;
+        } catch (error) {
+          console.log('Token verification failed:', error.message);
+          // Token is invalid, clear storage
+          localStorage.removeItem('authToken');
+          localStorage.removeItem('user');
+          this.notifyAuthStateChange(null);
+          return null;
+        }
+      } else {
         this.notifyAuthStateChange(null);
         return null;
       }
-    } else {
+    } catch (error) {
+      console.error('Auth initialization error:', error);
       this.notifyAuthStateChange(null);
       return null;
     }
@@ -156,14 +173,13 @@ class AuthService {
     this.notifyAuthStateChange(null);
   }
 
-  // Send password reset email (placeholder - you'd implement this on backend)
+  // Send password reset email
   async sendPasswordResetEmail(email) {
     try {
-      // For now, just show a message - you can implement this on the backend
-      console.log(`Password reset would be sent to: ${email}`);
-      return Promise.resolve();
-    } catch {
-      throw new Error('Password reset failed');
+      const response = await api.post('/auth/forgot-password', { email });
+      return response.data;
+    } catch (error) {
+      throw new Error(error.response?.data?.error || 'Password reset failed');
     }
   }
 
@@ -183,12 +199,23 @@ class AuthService {
     return storedUser ? JSON.parse(storedUser) : null;
   }
 
-  // Sign in with popup (Google/Facebook) - placeholder
-  async signInWithPopup() {
+  // Sign in with popup (Google/Facebook)
+  async signInWithPopup(provider) {
     try {
-      // This would require implementing OAuth on the backend
-      // For now, we'll just throw an error to maintain compatibility
-      throw new Error('Social login not implemented yet');
+      const providerName = provider.providerId === 'google.com' ? 'google' : 'facebook';
+      
+      // For now, redirect to OAuth URL directly (simpler approach)
+      const response = await api.get(`/auth/${providerName}`);
+      const { authUrl } = response.data;
+      
+      // Store the current page URL to redirect back after OAuth
+      localStorage.setItem('oauthRedirect', window.location.pathname);
+      
+      // Redirect to OAuth URL
+      window.location.href = authUrl;
+      
+      // This won't actually return since we're redirecting
+      return new Promise(() => {});
     } catch (error) {
       throw new Error(`Social login failed: ${error.message}`);
     }
