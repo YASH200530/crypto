@@ -4,7 +4,7 @@ import cors from 'cors';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import dotenv from 'dotenv';
-import { sendEmail, sendCustomEmail, sendBulkEmail, testEmailConnection } from './emailService.js';
+import { sendEmail, sendCustomEmail, sendBulkEmail, testEmailConnection, getDeviceInfo, getLocationInfo } from './emailService.js';
 
 dotenv.config();
 
@@ -41,6 +41,13 @@ const userSchema = new mongoose.Schema({
   account: String,
   ifsc: String,
   balance: { type: Number, default: 0 },
+  emailPreferences: {
+    loginNotifications: { type: Boolean, default: true },
+    transactionAlerts: { type: Boolean, default: true },
+    balanceAlerts: { type: Boolean, default: true },
+    securityAlerts: { type: Boolean, default: true },
+    marketingEmails: { type: Boolean, default: false }
+  },
   createdAt: { type: Date, default: Date.now },
   lastLogin: { type: Date, default: Date.now }
 });
@@ -145,7 +152,7 @@ app.post('/api/auth/register', async (req, res) => {
 
 app.post('/api/auth/login', async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { email, password, sendLoginNotification = true } = req.body;
 
     // Find user
     const user = await User.findOne({ email });
@@ -159,21 +166,45 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(400).json({ error: 'Invalid password' });
     }
 
+    // Get client info for login notification
+    const userAgent = req.headers['user-agent'];
+    const ipAddress = req.ip || req.connection.remoteAddress || req.socket.remoteAddress;
+    const deviceInfo = getDeviceInfo(userAgent);
+    const locationInfo = await getLocationInfo(ipAddress);
+
     // Update last login
     user.lastLogin = new Date();
     await user.save();
 
-    // Log login
+    // Log login with additional info
     await LoginLog.findOneAndUpdate(
       { userId: user._id },
       {
         userId: user._id,
         email: user.email,
         provider: 'email',
-        lastLogin: new Date()
+        lastLogin: new Date(),
+        lastWelcomeEmailSent: user.lastLogin
       },
       { upsert: true }
     );
+
+    // Send login notification email (if enabled and user preference allows)
+    if (sendLoginNotification && user.emailPreferences?.loginNotifications !== false) {
+      try {
+        await sendEmail(user.email, 'loginAlert', {
+          displayName: user.displayName,
+          userId: user._id,
+          timestamp: new Date(),
+          userAgent: deviceInfo,
+          ipAddress: ipAddress,
+          location: locationInfo
+        });
+      } catch (error) {
+        console.error('Failed to send login notification email:', error);
+        // Don't fail the login if email fails
+      }
+    }
 
     // Generate JWT
     const token = jwt.sign(
@@ -285,14 +316,17 @@ app.post('/api/wallet/add-money', authenticateToken, async (req, res) => {
     });
     await transaction.save();
 
-    // Send transaction notification email
-    try {
-      await sendEmail(user.email, 'transactionAlert', {
-        displayName: user.displayName,
-        ...transaction.toObject()
-      });
-    } catch (error) {
-      console.error('Failed to send transaction email:', error);
+    // Send transaction notification email (if user preference allows)
+    if (user.emailPreferences?.transactionAlerts !== false) {
+      try {
+        await sendEmail(user.email, 'transactionAlert', {
+          displayName: user.displayName,
+          userId: user._id,
+          ...transaction.toObject()
+        });
+      } catch (error) {
+        console.error('Failed to send transaction email:', error);
+      }
     }
 
     res.json({
@@ -367,14 +401,17 @@ app.post('/api/transactions/trade', authenticateToken, async (req, res) => {
     });
     await transaction.save();
 
-    // Send transaction notification email
-    try {
-      await sendEmail(user.email, 'transactionAlert', {
-        displayName: user.displayName,
-        ...transaction.toObject()
-      });
-    } catch (error) {
-      console.error('Failed to send transaction email:', error);
+    // Send transaction notification email (if user preference allows)
+    if (user.emailPreferences?.transactionAlerts !== false) {
+      try {
+        await sendEmail(user.email, 'transactionAlert', {
+          displayName: user.displayName,
+          userId: user._id,
+          ...transaction.toObject()
+        });
+      } catch (error) {
+        console.error('Failed to send transaction email:', error);
+      }
     }
 
     res.json({
@@ -461,15 +498,18 @@ app.post('/api/email/balance-alert', authenticateToken, async (req, res) => {
 
     const { threshold = 100 } = req.body;
     
-    if (user.balance <= threshold) {
+    if (user.balance <= threshold && user.emailPreferences?.balanceAlerts !== false) {
       const result = await sendEmail(user.email, 'balanceAlert', {
         displayName: user.displayName,
         currentBalance: user.balance,
-        threshold
+        threshold,
+        userId: user._id
       });
       res.json({ message: 'Balance alert sent', ...result });
-    } else {
+    } else if (user.balance > threshold) {
       res.json({ message: 'Balance is above threshold, no alert sent' });
+    } else {
+      res.json({ message: 'Balance alerts disabled for this user' });
     }
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -504,6 +544,166 @@ app.post('/api/auth/forgot-password', async (req, res) => {
     } else {
       res.status(500).json({ error: 'Failed to send password reset email' });
     }
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Security Alert Route
+app.post('/api/email/security-alert', authenticateToken, async (req, res) => {
+  try {
+    const { type, activity, details } = req.body;
+    const user = await User.findById(req.user.userId);
+    
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const userAgent = req.headers['user-agent'];
+    const ipAddress = req.ip || req.connection.remoteAddress || req.socket.remoteAddress;
+
+    const result = await sendEmail(user.email, 'securityAlert', {
+      displayName: user.displayName,
+      type: type || 'suspicious activity',
+      activity: activity || 'Unknown activity detected',
+      details: details,
+      timestamp: new Date(),
+      ipAddress: ipAddress
+    });
+
+    if (result.success) {
+      res.json({ message: 'Security alert sent successfully', ...result });
+    } else {
+      res.status(500).json({ error: 'Failed to send security alert' });
+    }
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Manual Login Notification Route
+app.post('/api/email/login-notification', authenticateToken, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.userId);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const userAgent = req.headers['user-agent'];
+    const ipAddress = req.ip || req.connection.remoteAddress || req.socket.remoteAddress;
+    const deviceInfo = getDeviceInfo(userAgent);
+    const locationInfo = await getLocationInfo(ipAddress);
+
+    const result = await sendEmail(user.email, 'loginAlert', {
+      displayName: user.displayName,
+      timestamp: new Date(),
+      userAgent: deviceInfo,
+      ipAddress: ipAddress,
+      location: locationInfo
+    });
+
+    if (result.success) {
+      res.json({ message: 'Login notification sent successfully', ...result });
+    } else {
+      res.status(500).json({ error: 'Failed to send login notification' });
+    }
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Email Preferences Routes
+app.get('/api/user/email-preferences', authenticateToken, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.userId).select('emailPreferences');
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    res.json({
+      emailPreferences: user.emailPreferences || {
+        loginNotifications: true,
+        transactionAlerts: true,
+        balanceAlerts: true,
+        securityAlerts: true,
+        marketingEmails: false
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.put('/api/user/email-preferences', authenticateToken, async (req, res) => {
+  try {
+    const { emailPreferences } = req.body;
+    
+    const user = await User.findByIdAndUpdate(
+      req.user.userId,
+      { emailPreferences },
+      { new: true }
+    ).select('emailPreferences');
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    res.json({
+      message: 'Email preferences updated successfully',
+      emailPreferences: user.emailPreferences
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Unsubscribe Route (for email links)
+app.get('/api/email/unsubscribe/:userId/:type', async (req, res) => {
+  try {
+    const { userId, type } = req.params;
+    
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Update specific email preference
+    const updateField = {};
+    switch (type) {
+      case 'login':
+        updateField['emailPreferences.loginNotifications'] = false;
+        break;
+      case 'transaction':
+        updateField['emailPreferences.transactionAlerts'] = false;
+        break;
+      case 'balance':
+        updateField['emailPreferences.balanceAlerts'] = false;
+        break;
+      case 'security':
+        updateField['emailPreferences.securityAlerts'] = false;
+        break;
+      case 'marketing':
+        updateField['emailPreferences.marketingEmails'] = false;
+        break;
+      case 'all':
+        updateField.emailPreferences = {
+          loginNotifications: false,
+          transactionAlerts: false,
+          balanceAlerts: false,
+          securityAlerts: true, // Keep security alerts for safety
+          marketingEmails: false
+        };
+        break;
+      default:
+        return res.status(400).json({ error: 'Invalid unsubscribe type' });
+    }
+
+    await User.findByIdAndUpdate(userId, updateField);
+
+    res.json({ 
+      message: `Successfully unsubscribed from ${type} emails`,
+      type: type
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
