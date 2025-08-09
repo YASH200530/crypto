@@ -8,14 +8,20 @@ import {
   sendPasswordResetEmail,
   googleProvider,
   facebookProvider,
+  verifyKycOtp,
 } from "../services/auth";
-import { AnimatePresence } from "framer-motion";
+import { AnimatePresence, motion } from "framer-motion";
 import emailjs from "@emailjs/browser";
 
 export default function Login() {
   const [isSignup, setIsSignup] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [pan, setPan] = useState("");
+  const [mobile, setMobile] = useState("");
+  const [otp, setOtp] = useState("");
+  const [kycStep, setKycStep] = useState('login'); // 'login' | 'kyc' | 'otp'
+  const [sessionId, setSessionId] = useState(null);
   const navigate = useNavigate();
 
   // ✅ EmailJS Welcome Mail
@@ -41,24 +47,66 @@ export default function Login() {
   const handleAuth = async (e) => {
     e.preventDefault();
     try {
-      let userCred;
+      let result;
+
       if (isSignup) {
-        userCred = await createUserWithEmailAndPassword(email, password);
+        const userCred = await createUserWithEmailAndPassword(email, password);
         await sendEmailVerification(userCred.user);
         alert("Signup successful! Account created and ready to use.");
         setIsSignup(false);
         return;
       }
 
-      userCred = await signInWithEmailAndPassword(email, password);
-      const user = userCred.user;
+      // Login flow with optional KYC
+      if (kycStep === 'login') {
+        result = await signInWithEmailAndPassword(email, password);
+        if (result?.requiresKyc) {
+          setKycStep('kyc');
+          alert('Please enter your PAN and mobile number to complete KYC.');
+          return;
+        }
+        const user = result.user;
+        const sendNow = await shouldSendWelcomeEmail(user);
+        if (sendNow) await sendWelcomeEmail(user.email);
+        alert("Login successful!");
+        navigate("/");
+        return;
+      }
 
-      // Email verification is now handled on backend, so we skip this check
-      const sendNow = await shouldSendWelcomeEmail(user);
-      if (sendNow) await sendWelcomeEmail(user.email);
+      if (kycStep === 'kyc') {
+        if (!pan || !mobile) {
+          alert('Enter PAN and mobile linked to PAN.');
+          return;
+        }
+        result = await signInWithEmailAndPassword(email, password, pan.trim(), mobile.trim());
+        if (result?.requiresKyc && result.sessionId) {
+          setSessionId(result.sessionId);
+          setKycStep('otp');
+          alert('OTP sent to your mobile number.');
+          return;
+        }
+        // If backend directly logs in (edge case)
+        const user = result.user;
+        const sendNow = await shouldSendWelcomeEmail(user);
+        if (sendNow) await sendWelcomeEmail(user.email);
+        alert("Login successful!");
+        navigate("/");
+        return;
+      }
 
-      alert("Login successful!");
-      navigate("/");
+      if (kycStep === 'otp') {
+        if (!sessionId || !otp) {
+          alert('Enter OTP.');
+          return;
+        }
+        const verifyRes = await verifyKycOtp(sessionId, otp.trim());
+        const user = verifyRes.user;
+        const sendNow = await shouldSendWelcomeEmail(user);
+        if (sendNow) await sendWelcomeEmail(user.email);
+        alert('KYC verified. Login successful!');
+        navigate('/');
+        return;
+      }
     } catch (err) {
       if (err.code === "auth/user-not-found") {
         alert("No account found. Please sign up first.");
@@ -140,7 +188,7 @@ export default function Login() {
                 required
               />
 
-              {!isSignup && (
+              {!isSignup && kycStep === 'login' && (
                 <div className="text-right">
                   <button
                     type="button"
@@ -152,11 +200,49 @@ export default function Login() {
                 </div>
               )}
 
+              {!isSignup && kycStep === 'kyc' && (
+                <div className="space-y-3">
+                  <input
+                    type="text"
+                    placeholder="PAN"
+                    value={pan}
+                    onChange={(e) => setPan(e.target.value.toUpperCase())}
+                    className="w-full p-3 border border-gray-300 dark:border-gray-600 rounded-lg bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                  <input
+                    type="tel"
+                    placeholder="Mobile (linked to PAN)"
+                    value={mobile}
+                    onChange={(e) => setMobile(e.target.value)}
+                    className="w-full p-3 border border-gray-300 dark:border-gray-600 rounded-lg bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+              )}
+
+              {!isSignup && kycStep === 'otp' && (
+                <div className="space-y-3">
+                  <input
+                    type="text"
+                    placeholder="Enter OTP"
+                    value={otp}
+                    onChange={(e) => setOtp(e.target.value)}
+                    className="w-full p-3 border border-gray-300 dark:border-gray-600 rounded-lg bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                  <p className="text-xs text-gray-500">OTP sent to {mobile}. Valid for 5 minutes.</p>
+                </div>
+              )}
+
               <button
                 type="submit"
                 className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg transition"
               >
-                {isSignup ? "Sign Up" : "Login"}
+                {isSignup
+                  ? "Sign Up"
+                  : kycStep === 'login'
+                    ? "Login"
+                    : kycStep === 'kyc'
+                      ? "Send OTP"
+                      : "Verify OTP"}
               </button>
             </form>
 
@@ -187,7 +273,7 @@ export default function Login() {
             <p className="text-center mt-6 text-sm text-gray-600 dark:text-gray-400">
               {isSignup ? "Already have an account?" : "Don't have an account?"}{" "}
               <button
-                onClick={() => setIsSignup(!isSignup)}
+                onClick={() => { setIsSignup(!isSignup); setKycStep('login'); }}
                 className="text-blue-600 dark:text-blue-400 font-medium hover:underline"
               >
                 {isSignup ? "Login" : "Sign Up"}
