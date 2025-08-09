@@ -110,15 +110,22 @@ class AuthService {
     }
   }
 
-  // Sign in with email and password
-  async signInWithEmailAndPassword(email, password) {
+  // Sign in with email and password (supports optional KYC PAN/mobile)
+  async signInWithEmailAndPassword(email, password, pan, mobile) {
     try {
-      const response = await api.post('/auth/login', {
-        email,
-        password
-      });
+      const payload = { email, password };
+      if (pan) payload.pan = pan;
+      if (mobile) payload.mobile = mobile;
 
-      const { token, user } = response.data;
+      const response = await api.post('/auth/login', payload);
+      const data = response.data;
+
+      // If backend requires KYC, return that info to the caller
+      if (data?.requiresKyc) {
+        return { requiresKyc: true, sessionId: data.sessionId || null, reason: data.reason };
+      }
+
+      const { token, user } = data;
       
       // Store token and user
       localStorage.setItem('authToken', token);
@@ -146,6 +153,21 @@ class AuthService {
       }
       
       throw new Error(errorMessage);
+    }
+  }
+
+  // Verify KYC OTP and complete login
+  async verifyKycOtp(sessionId, otp) {
+    try {
+      const response = await api.post('/auth/verify-kyc-otp', { sessionId, otp });
+      const { token, user } = response.data;
+
+      localStorage.setItem('authToken', token);
+      localStorage.setItem('user', JSON.stringify(user));
+      this.notifyAuthStateChange(user);
+      return { user };
+    } catch (error) {
+      throw new Error(error.response?.data?.error || 'OTP verification failed');
     }
   }
 
@@ -208,8 +230,9 @@ export const onAuthStateChanged = (callback) => auth.onAuthStateChanged(callback
 export const signOut = () => auth.signOut();
 export const createUserWithEmailAndPassword = (email, password) => 
   auth.createUserWithEmailAndPassword(email, password);
-export const signInWithEmailAndPassword = (email, password) => 
-  auth.signInWithEmailAndPassword(email, password);
+export const signInWithEmailAndPassword = (email, password, pan, mobile) => 
+  auth.signInWithEmailAndPassword(email, password, pan, mobile);
+export const verifyKycOtp = (sessionId, otp) => auth.verifyKycOtp(sessionId, otp);
 export const sendPasswordResetEmail = (email) => 
   auth.sendPasswordResetEmail(email);
 export const sendEmailVerification = (user) => 

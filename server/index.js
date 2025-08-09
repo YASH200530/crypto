@@ -42,10 +42,39 @@ const userSchema = new mongoose.Schema({
   ifsc: String,
   balance: { type: Number, default: 0 },
   createdAt: { type: Date, default: Date.now },
-  lastLogin: { type: Date, default: Date.now }
+  lastLogin: { type: Date, default: Date.now },
+  // KYC fields
+  kycStatus: { type: String, enum: ['unverified', 'verified'], default: 'unverified' },
+  kycMobile: { type: String, default: '' },
+  kycVerifiedAt: { type: Date }
 });
 
 const User = mongoose.model('User', userSchema);
+
+// OTP Session Schema for KYC during login
+const otpSessionSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  pan: { type: String, required: true },
+  mobile: { type: String, required: true },
+  otpHash: { type: String, required: true },
+  expiresAt: { type: Date, required: true },
+  attempts: { type: Number, default: 0 },
+  createdAt: { type: Date, default: Date.now }
+});
+
+const OtpSession = mongoose.model('OtpSession', otpSessionSchema);
+
+// Helper: generate 6-digit OTP
+const generateOtp = () => {
+  return Math.floor(100000 + Math.random() * 900000).toString();
+};
+
+// Helper: send SMS (stub). Replace with an actual SMS provider integration.
+const sendSms = async (mobileNumber, message) => {
+  // In production, integrate with an SMS gateway (e.g., Twilio, MSG91, etc.)
+  console.log(`📲 SMS to ${mobileNumber}: ${message}`);
+  return { success: true };
+};
 
 // Login Log Schema
 const loginLogSchema = new mongoose.Schema({
@@ -145,7 +174,7 @@ app.post('/api/auth/register', async (req, res) => {
 
 app.post('/api/auth/login', async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { email, password, pan, mobile } = req.body;
 
     // Find user
     const user = await User.findOne({ email });
@@ -159,9 +188,114 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(400).json({ error: 'Invalid password' });
     }
 
-    // Update last login
+    // If KYC already verified, proceed directly
+    if (user.kycStatus === 'verified' && user.pan && user.kycMobile) {
+      user.lastLogin = new Date();
+      await user.save();
+
+      const token = jwt.sign(
+        { userId: user._id, email: user.email },
+        process.env.JWT_SECRET || 'your-secret-key',
+        { expiresIn: '7d' }
+      );
+
+      return res.json({
+        message: 'Login successful',
+        token,
+        user: {
+          uid: user._id,
+          email: user.email,
+          displayName: user.displayName,
+          emailVerified: user.emailVerified
+        }
+      });
+    }
+
+    // If KYC is not verified, ensure PAN and mobile are provided
+    if (!pan || !mobile) {
+      return res.status(200).json({ requiresKyc: true, reason: 'missing_pan_mobile' });
+    }
+
+    // Initiate KYC OTP flow
+    const otp = generateOtp();
+    const otpHash = await bcrypt.hash(otp, 10);
+    const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
+
+    // Create session
+    const session = await OtpSession.create({
+      userId: user._id,
+      pan,
+      mobile,
+      otpHash,
+      expiresAt
+    });
+
+    // Send OTP via SMS (stub)
+    await sendSms(mobile, `Your KYC OTP is ${otp}. It is valid for 5 minutes.`);
+
+    // Also send via email as fallback for testing environments
+    try {
+      await sendCustomEmail(
+        user.email,
+        'Your KYC OTP',
+        `<p>Your KYC OTP is <strong>${otp}</strong>. It is valid for 5 minutes.</p>`
+      );
+    } catch (e) {
+      console.warn('Failed to send fallback email for OTP:', e?.message);
+    }
+
+    return res.status(200).json({ requiresKyc: true, sessionId: session._id.toString(), message: 'OTP sent to registered mobile' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Verify KYC OTP and complete login
+app.post('/api/auth/verify-kyc-otp', async (req, res) => {
+  try {
+    const { sessionId, otp } = req.body;
+
+    if (!sessionId || !otp) {
+      return res.status(400).json({ error: 'Session and OTP are required' });
+    }
+
+    const session = await OtpSession.findById(sessionId);
+    if (!session) {
+      return res.status(400).json({ error: 'Invalid session' });
+    }
+
+    if (new Date() > session.expiresAt) {
+      await session.deleteOne();
+      return res.status(400).json({ error: 'OTP expired' });
+    }
+
+    if (session.attempts >= 5) {
+      await session.deleteOne();
+      return res.status(429).json({ error: 'Too many attempts' });
+    }
+
+    const isMatch = await bcrypt.compare(otp, session.otpHash);
+    if (!isMatch) {
+      session.attempts += 1;
+      await session.save();
+      return res.status(400).json({ error: 'Invalid OTP' });
+    }
+
+    // OTP is valid -> complete KYC and login
+    const user = await User.findById(session.userId);
+    if (!user) {
+      await session.deleteOne();
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    user.pan = session.pan; // store/update PAN
+    user.kycMobile = session.mobile;
+    user.kycStatus = 'verified';
+    user.kycVerifiedAt = new Date();
     user.lastLogin = new Date();
     await user.save();
+
+    await session.deleteOne();
 
     // Log login
     await LoginLog.findOneAndUpdate(
@@ -182,29 +316,9 @@ app.post('/api/auth/login', async (req, res) => {
       { expiresIn: '7d' }
     );
 
-    res.json({
-      message: 'Login successful',
+    return res.json({
+      message: 'KYC verified and login successful',
       token,
-      user: {
-        uid: user._id,
-        email: user.email,
-        displayName: user.displayName,
-        emailVerified: user.emailVerified
-      }
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.post('/api/auth/verify', authenticateToken, async (req, res) => {
-  try {
-    const user = await User.findById(req.user.userId).select('-password');
-    if (!user) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-
-    res.json({
       user: {
         uid: user._id,
         email: user.email,
