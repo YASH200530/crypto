@@ -5,6 +5,12 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import dotenv from 'dotenv';
 import { sendEmail, sendCustomEmail, sendBulkEmail, testEmailConnection } from './emailService.js';
+import passport from 'passport';
+import session from 'express-session';
+import GoogleOAuth from 'passport-google-oauth20';
+import FacebookOAuth from 'passport-facebook';
+const GoogleStrategy = GoogleOAuth.Strategy;
+const FacebookStrategy = FacebookOAuth.Strategy;
 
 dotenv.config();
 
@@ -17,6 +23,17 @@ app.use(cors({
   credentials: true
 }));
 app.use(express.json());
+app.use(session({
+  secret: process.env.SESSION_SECRET || 'replace-this-secret',
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    secure: false,
+    sameSite: 'lax'
+  }
+}));
+app.use(passport.initialize());
+app.use(passport.session());
 
 // MongoDB Connection
 mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/crypto-app', {
@@ -58,7 +75,7 @@ const loginLogSchema = new mongoose.Schema({
 
 const LoginLog = mongoose.model('LoginLog', loginLogSchema);
 
-// Transaction Schema
+// Transaction Schema (moved above usage)
 const transactionSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   type: { type: String, enum: ['buy', 'sell', 'deposit'], required: true },
@@ -72,7 +89,7 @@ const transactionSchema = new mongoose.Schema({
 
 const Transaction = mongoose.model('Transaction', transactionSchema);
 
-// JWT Middleware
+// JWT Middleware (moved above usage)
 const authenticateToken = (req, res, next) => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
@@ -88,6 +105,99 @@ const authenticateToken = (req, res, next) => {
     req.user = user;
     next();
   });
+};
+
+// Passport OAuth Strategies
+const SERVER_URL = process.env.SERVER_URL || `http://localhost:${PORT}`;
+const CLIENT_URL = process.env.CLIENT_URL || 'http://localhost:5173';
+const HAS_GOOGLE = Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET);
+const HAS_FACEBOOK = Boolean(process.env.FACEBOOK_APP_ID && process.env.FACEBOOK_APP_SECRET);
+
+passport.serializeUser((user, done) => done(null, user.id));
+passport.deserializeUser(async (id, done) => {
+  try {
+    const user = await User.findById(id);
+    done(null, user);
+  } catch (err) {
+    done(err);
+  }
+});
+
+if (HAS_GOOGLE) {
+  passport.use(new GoogleStrategy({
+    clientID: process.env.GOOGLE_CLIENT_ID,
+    clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+    callbackURL: `${SERVER_URL}/api/auth/google/callback`
+  }, async (accessToken, refreshToken, profile, done) => {
+    try {
+      const email = profile.emails && profile.emails[0] && profile.emails[0].value;
+      if (!email) {
+        return done(new Error('Google account has no public email'));
+      }
+
+      let user = await User.findOne({ email });
+      if (!user) {
+        const randomPassword = await bcrypt.hash(jwt.sign({ p: profile.id }, process.env.JWT_SECRET || 'your-secret-key'), 10);
+        user = await User.create({
+          email,
+          password: randomPassword,
+          displayName: profile.displayName || email.split('@')[0],
+          emailVerified: true,
+          provider: 'google'
+        });
+      } else {
+        user.provider = 'google';
+        user.displayName = user.displayName || profile.displayName;
+        user.lastLogin = new Date();
+        await user.save();
+      }
+
+      return done(null, user);
+    } catch (err) {
+      return done(err);
+    }
+  }));
+}
+
+if (HAS_FACEBOOK) {
+  passport.use(new FacebookStrategy({
+    clientID: process.env.FACEBOOK_APP_ID,
+    clientSecret: process.env.FACEBOOK_APP_SECRET,
+    callbackURL: `${SERVER_URL}/api/auth/facebook/callback`,
+    profileFields: ['id', 'emails', 'name', 'displayName']
+  }, async (accessToken, refreshToken, profile, done) => {
+    try {
+      let email = profile.emails && profile.emails[0] && profile.emails[0].value;
+      if (!email) {
+        email = `${profile.id}@facebook.local`;
+      }
+
+      let user = await User.findOne({ email });
+      if (!user) {
+        const randomPassword = await bcrypt.hash(jwt.sign({ p: profile.id }, process.env.JWT_SECRET || 'your-secret-key'), 10);
+        user = await User.create({
+          email,
+          password: randomPassword,
+          displayName: profile.displayName || [profile.name?.givenName, profile.name?.familyName].filter(Boolean).join(' ') || email.split('@')[0],
+          emailVerified: true,
+          provider: 'facebook'
+        });
+      } else {
+        user.provider = 'facebook';
+        user.displayName = user.displayName || profile.displayName;
+        user.lastLogin = new Date();
+        await user.save();
+      }
+
+      return done(null, user);
+    } catch (err) {
+      return done(err);
+    }
+  }));
+}
+
+const sendOauthError = (res, message) => {
+  res.status(503).send(`<!doctype html><html><head><meta charset="utf-8"/></head><body><script>try{window.opener && window.opener.postMessage({type:'oauth-error',message:${JSON.stringify(message)}}, '${CLIENT_URL}');}catch(e){}window.close();</script></body></html>`);
 };
 
 // Auth Routes
@@ -215,6 +325,77 @@ app.post('/api/auth/verify', authenticateToken, async (req, res) => {
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
+});
+
+// OAuth Routes
+if (HAS_GOOGLE) {
+  app.get('/api/auth/google', passport.authenticate('google', { scope: ['profile', 'email'] }));
+  app.get('/api/auth/google/callback', passport.authenticate('google', { failureRedirect: '/auth-failed' }), async (req, res) => {
+    try {
+      const user = req.user;
+      const token = jwt.sign(
+        { userId: user._id, email: user.email },
+        process.env.JWT_SECRET || 'your-secret-key',
+        { expiresIn: '7d' }
+      );
+
+      await LoginLog.findOneAndUpdate(
+        { userId: user._id },
+        { userId: user._id, email: user.email, provider: 'google', lastLogin: new Date() },
+        { upsert: true }
+      );
+
+      const payload = {
+        type: 'oauth-success',
+        token,
+        user: { uid: user._id, email: user.email, displayName: user.displayName, emailVerified: user.emailVerified }
+      };
+
+      res.send(`<!doctype html><html><head><meta charset="utf-8"/></head><body><script>(function(){var payload=${JSON.stringify(payload)};var targetOrigin='${CLIENT_URL}';try{window.opener && window.opener.postMessage(payload,targetOrigin);}catch(e){}window.close();})();</script></body></html>`);
+    } catch (error) {
+      res.redirect('/auth-failed');
+    }
+  });
+} else {
+  app.get('/api/auth/google', (req, res) => sendOauthError(res, 'Google OAuth not configured'));
+  app.get('/api/auth/google/callback', (req, res) => sendOauthError(res, 'Google OAuth not configured'));
+}
+
+if (HAS_FACEBOOK) {
+  app.get('/api/auth/facebook', passport.authenticate('facebook', { scope: ['email'] }));
+  app.get('/api/auth/facebook/callback', passport.authenticate('facebook', { failureRedirect: '/auth-failed' }), async (req, res) => {
+    try {
+      const user = req.user;
+      const token = jwt.sign(
+        { userId: user._id, email: user.email },
+        process.env.JWT_SECRET || 'your-secret-key',
+        { expiresIn: '7d' }
+      );
+
+      await LoginLog.findOneAndUpdate(
+        { userId: user._id },
+        { userId: user._id, email: user.email, provider: 'facebook', lastLogin: new Date() },
+        { upsert: true }
+      );
+
+      const payload = {
+        type: 'oauth-success',
+        token,
+        user: { uid: user._id, email: user.email, displayName: user.displayName, emailVerified: user.emailVerified }
+      };
+
+      res.send(`<!doctype html><html><head><meta charset="utf-8"/></head><body><script>(function(){var payload=${JSON.stringify(payload)};var targetOrigin='${CLIENT_URL}';try{window.opener && window.opener.postMessage(payload,targetOrigin);}catch(e){}window.close();})();</script></body></html>`);
+    } catch (error) {
+      res.redirect('/auth-failed');
+    }
+  });
+} else {
+  app.get('/api/auth/facebook', (req, res) => sendOauthError(res, 'Facebook OAuth not configured'));
+  app.get('/api/auth/facebook/callback', (req, res) => sendOauthError(res, 'Facebook OAuth not configured'));
+}
+
+app.get('/auth-failed', (req, res) => {
+  res.status(401).send(`<!doctype html><html><head><meta charset="utf-8"/></head><body><script>try{window.opener && window.opener.postMessage({type:'oauth-error',message:'OAuth failed'}, '${CLIENT_URL}');}catch(e){}window.close();</script></body></html>`);
 });
 
 // User Profile Routes
