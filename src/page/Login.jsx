@@ -9,7 +9,7 @@ import {
   googleProvider,
   facebookProvider,
 } from "../services/auth";
-import { AnimatePresence } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
 import emailjs from "@emailjs/browser";
 
 export default function Login() {
