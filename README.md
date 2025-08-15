@@ -55,12 +55,26 @@ JWT_SECRET=your-super-secret-jwt-key-change-this-in-production
 # Server Configuration
 PORT=5000
 CLIENT_URL=http://localhost:5173
+SERVER_URL=http://localhost:5000
+SESSION_SECRET=replace-this-secret
+
+# Google OAuth
+GOOGLE_CLIENT_ID=your-google-client-id
+GOOGLE_CLIENT_SECRET=your-google-client-secret
+
+# Facebook OAuth
+FACEBOOK_APP_ID=your-facebook-app-id
+FACEBOOK_APP_SECRET=your-facebook-app-secret
 ```
 
 Create a `.env.local` file for client configuration:
 ```env
 VITE_API_URL=http://localhost:5000/api
 ```
+
+OAuth callback URLs to configure in provider consoles:
+- Google: `http://localhost:5000/api/auth/google/callback`
+- Facebook: `http://localhost:5000/api/auth/facebook/callback`
 
 ### 3. Start MongoDB
 Make sure MongoDB is running on your system:

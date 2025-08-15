@@ -183,15 +183,58 @@ class AuthService {
     return storedUser ? JSON.parse(storedUser) : null;
   }
 
-  // Sign in with popup (Google/Facebook) - placeholder
-  async signInWithPopup() {
-    try {
-      // This would require implementing OAuth on the backend
-      // For now, we'll just throw an error to maintain compatibility
-      throw new Error('Social login not implemented yet');
-    } catch (error) {
-      throw new Error(`Social login failed: ${error.message}`);
-    }
+  // Sign in with popup (Google/Facebook) - implemented via backend OAuth popup
+  async signInWithPopup(provider) {
+    return new Promise((resolve, reject) => {
+      try {
+        const clientOrigin = window.location.origin;
+        const serverBase = API_URL.replace(/\/?api$/, '');
+        const oauthPath = provider.providerId === 'google.com' ? '/api/auth/google' : '/api/auth/facebook';
+        const authUrl = `${serverBase}${oauthPath}`;
+
+        const width = 500;
+        const height = 600;
+        const left = window.screenX + (window.innerWidth - width) / 2;
+        const top = window.screenY + (window.innerHeight - height) / 2;
+
+        const popup = window.open(
+          authUrl,
+          'social-login',
+          `width=${width},height=${height},left=${left},top=${top}`
+        );
+
+        if (!popup) {
+          reject(new Error('Failed to open login window'));
+          return;
+        }
+
+        const handleMessage = (event) => {
+          try {
+            // We expect the message to originate from the backend server origin
+            if (event.origin !== serverBase) return;
+            const data = event.data || {};
+            if (data.type === 'oauth-success' && data.token && data.user) {
+              localStorage.setItem('authToken', data.token);
+              localStorage.setItem('user', JSON.stringify(data.user));
+              this.notifyAuthStateChange(data.user);
+              window.removeEventListener('message', handleMessage);
+              resolve({ user: data.user });
+            } else if (data.type === 'oauth-error') {
+              window.removeEventListener('message', handleMessage);
+              reject(new Error(data.message || 'Social login failed'));
+            }
+          } catch (e) {
+            // ignore
+          } finally {
+            try { popup.close(); } catch {}
+          }
+        };
+
+        window.addEventListener('message', handleMessage);
+      } catch (error) {
+        reject(new Error(`Social login failed: ${error.message}`));
+      }
+    });
   }
 }
 
